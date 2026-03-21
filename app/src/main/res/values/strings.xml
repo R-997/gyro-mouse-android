@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Gyro Mouse</string>
+    <string name="action_settings">设置</string>
+    
+    <!-- 按钮文字 -->
+    <string name="btn_init">初始化 HID</string>
+    <string name="btn_connect">连接设备</string>
+    <string name="btn_disconnect">断开连接</string>
+    <string name="btn_calibrate">校准传感器</string>
+    <string name="btn_left">左键</string>
+    <string name="btn_right">右键</string>
+    <string name="btn_middle">中键</string>
+    
+    <!-- 状态文字 -->
+    <string name="status_disconnected">未连接</string>
+    <string name="status_connected">已连接</string>
+    <string name="status_connecting">连接中... </string>
+    
+    <!-- 提示信息 -->
+    <string name="msg_init_success">HID 设备已就绪</string>
+    <string name="msg_init_failed">初始化失败</string>
+    <string name="msg_no_paired_devices">请先配对电脑蓝牙</string>
+    <string name="msg_select_device">选择要连接的设备</string>
+</resources>
