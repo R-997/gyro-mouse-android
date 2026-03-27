@@ -175,6 +175,45 @@
                         android:progress="30"
                         android:layout_marginBottom="16dp" />
 
+                    <!-- 滚轮控制开关 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Y轴滚轮控制"
+                            android:textSize="14sp" />
+
+                        <Switch
+                            android:id="@+id/switchWheel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+
+                    </LinearLayout>
+
+                    <!-- 滚轮灵敏度 -->
+                    <TextView
+                        android:id="@+id/tvWheelSensitivity"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="滚轮灵敏度: 2.0"
+                        android:layout_marginBottom="4dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekWheelSensitivity"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="20"
+                        android:layout_marginBottom="16dp" />
+
                     <Button
                         android:id="@+id/btnCalibrate"
                         android:layout_width="match_parent"
@@ -272,7 +311,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="• 左右倾斜手机控制鼠标左右移动\n• 前后倾斜手机控制鼠标上下移动\n• 按住下方按钮进行点击\n• 调整灵敏度获得最佳体验"
+                        android:text="• 左右倾斜手机控制鼠标左右移动\n• 前后倾斜手机控制鼠标上下移动\n• 左右歪头控制滚轮滚动\n• 按住下方按钮进行点击\n• 调整灵敏度获得最佳体验"
                         android:textSize="14sp"
                         android:lineSpacingMultiplier="1.3" />
 

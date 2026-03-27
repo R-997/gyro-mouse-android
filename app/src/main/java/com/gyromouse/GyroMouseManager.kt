@@ -95,6 +95,13 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
     var sensitivity = 3.5f
     var smoothingFactor = 0.3f  // 平滑系数
     
+    // 滚轮设置
+    var wheelEnabled = true      // 是否启用Y轴滚轮
+    var wheelSensitivity = 2.0f  // 滚轮灵敏度
+    var wheelThreshold = 0.3f    // 触发滚轮的最小Y轴角度 (rad/s)
+    private var lastWheelTime = 0L
+    private val wheelIntervalMs = 50L  // 滚轮发送间隔（控制滚动速度）
+    
     // 按钮状态
     private var leftButton = false
     private var rightButton = false
@@ -111,7 +118,10 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         deviceAddress?.let { addr ->
             sensitivity = prefs.getFloat("sensitivity_$addr", 3.5f)
             smoothingFactor = prefs.getFloat("smoothing_$addr", 0.3f)
-            Log.d(TAG, "加载设备 $addr 设置: sensitivity=$sensitivity, smoothing=$smoothingFactor")
+            wheelEnabled = prefs.getBoolean("wheel_enabled_$addr", true)
+            wheelSensitivity = prefs.getFloat("wheel_sensitivity_$addr", 2.0f)
+            wheelThreshold = prefs.getFloat("wheel_threshold_$addr", 0.3f)
+            Log.d(TAG, "加载设备 $addr 设置: sensitivity=$sensitivity, wheelEnabled=$wheelEnabled")
         }
     }
     
@@ -123,9 +133,12 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
             prefs.edit().apply {
                 putFloat("sensitivity_$addr", sensitivity)
                 putFloat("smoothing_$addr", smoothingFactor)
+                putBoolean("wheel_enabled_$addr", wheelEnabled)
+                putFloat("wheel_sensitivity_$addr", wheelSensitivity)
+                putFloat("wheel_threshold_$addr", wheelThreshold)
                 apply()
             }
-            Log.d(TAG, "保存设备 $addr 设置: sensitivity=$sensitivity, smoothing=$smoothingFactor")
+            Log.d(TAG, "保存设备 $addr 设置: sensitivity=$sensitivity, wheelEnabled=$wheelEnabled")
         }
     }
 
@@ -461,9 +474,24 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                 if (dt > 0 && dt < 0.1f) {  // 防止异常值
                     // 陀螺仪数据 (rad/s) 转换为角速度
                     val gyroX = event.values[0]  // 绕 X 轴 (俯仰) -> 控制上下
+                    val gyroY = event.values[1]  // 绕 Y 轴 (滚转/歪头) -> 控制滚轮
                     val gyroZ = event.values[2]  // 绕 Z 轴 (偏航/水平旋转) -> 控制左右
                     
-                    // 新映射：
+                    // 处理滚轮（Y轴 - 左右倾斜/歪头）
+                    var wheelDelta = 0
+                    if (wheelEnabled) {
+                        val currentTimeMs = System.currentTimeMillis()
+                        if (abs(gyroY) > wheelThreshold && currentTimeMs - lastWheelTime > wheelIntervalMs) {
+                            // 左歪头(-Y) = 向上滚，右歪头(+Y) = 向下滚
+                            wheelDelta = if (gyroY > 0) 1 else -1
+                            // 根据倾斜程度调整滚动速度
+                            val intensity = ((abs(gyroY) - wheelThreshold) * wheelSensitivity).toInt().coerceIn(1, 3)
+                            wheelDelta *= intensity
+                            lastWheelTime = currentTimeMs
+                        }
+                    }
+                    
+                    // 鼠标移动映射：
                     // - X 轴 (俯仰) 控制 上下移动 (Y)
                     // - Z 轴 (水平旋转) 控制 左右移动 (X)
                     val targetVelX = -gyroZ * sensitivity * 100  // Z轴控制左右，反转方向
@@ -477,8 +505,8 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                     val dx = (velocityX * dt).toInt().coerceIn(-127, 127)
                     val dy = (velocityY * dt).toInt().coerceIn(-127, 127)
                     
-                    if (dx != 0 || dy != 0) {
-                        sendMouseMove(dx, dy)
+                    if (dx != 0 || dy != 0 || wheelDelta != 0) {
+                        sendMouseMove(dx, dy, wheelDelta)
                         listener?.onSensorData(dx.toFloat(), dy.toFloat())
                     }
                 }

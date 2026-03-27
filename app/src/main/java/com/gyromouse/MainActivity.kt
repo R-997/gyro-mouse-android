@@ -238,6 +238,27 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // 滚轮控制开关
+        binding.switchWheel.setOnCheckedChangeListener { _, isChecked ->
+            gyroManager.wheelEnabled = isChecked
+            binding.seekWheelSensitivity.isEnabled = isChecked
+            gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+        }
+
+        // 滚轮灵敏度滑块
+        binding.seekWheelSensitivity.setOnSeekBarChangeListener(object :
+            android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val sensitivity = 0.5f + (progress / 100f) * 4.5f  // 0.5 - 5.0
+                gyroManager.wheelSensitivity = sensitivity
+                binding.tvWheelSensitivity.text = "滚轮灵敏度: %.1f".format(sensitivity)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+            }
+        })
+
         // 校准按钮
         binding.btnCalibrate.setOnClickListener {
             calibrateSensors()
@@ -385,6 +406,9 @@ class MainActivity : AppCompatActivity() {
             device?.let {
                 binding.seekSensitivity.progress = ((gyroManager.sensitivity - 0.5f) / 9.5f * 100).toInt()
                 binding.seekSmoothing.progress = (gyroManager.smoothingFactor * 100).toInt()
+                binding.switchWheel.isChecked = gyroManager.wheelEnabled
+                binding.seekWheelSensitivity.progress = ((gyroManager.wheelSensitivity - 0.5f) / 4.5f * 100).toInt()
+                binding.seekWheelSensitivity.isEnabled = gyroManager.wheelEnabled
             }
             
             binding.btnConnect.text = "断开连接"
@@ -421,11 +445,13 @@ class MainActivity : AppCompatActivity() {
                 5. 移动手机来控制鼠标：
                    • 前后倾斜（X轴）= 上下移动
                    • 水平旋转（Z轴）= 左右移动
+                   • 左右歪头（Y轴）= 滚轮滚动
                 6. 下方按钮模拟左右中键
                 
                 提示：
                 - 调整灵敏度获得最佳体验
-                - 每个设备的灵敏度设置会被记住
+                - 每个设备的设置会被记住
+                - 可在设置中开关/调整滚轮功能
             """.trimIndent())
             .setPositiveButton("知道了", null)
             .show()
