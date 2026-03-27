@@ -242,6 +242,7 @@ class MainActivity : AppCompatActivity() {
         binding.switchWheel.setOnCheckedChangeListener { _, isChecked ->
             gyroManager.wheelEnabled = isChecked
             binding.seekWheelSensitivity.isEnabled = isChecked
+            binding.seekWheelThreshold.isEnabled = isChecked
             gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
         }
 
@@ -252,6 +253,20 @@ class MainActivity : AppCompatActivity() {
                 val sensitivity = 0.5f + (progress / 100f) * 4.5f  // 0.5 - 5.0
                 gyroManager.wheelSensitivity = sensitivity
                 binding.tvWheelSensitivity.text = "滚轮灵敏度: %.1f".format(sensitivity)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+            }
+        })
+
+        // 滚轮阈值滑块
+        binding.seekWheelThreshold.setOnSeekBarChangeListener(object :
+            android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val threshold = 0.1f + (progress / 100f) * 0.9f  // 0.1 - 1.0 rad/s
+                gyroManager.wheelThreshold = threshold
+                binding.tvWheelThreshold.text = "滚轮触发阈值: %.2f".format(threshold)
             }
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
@@ -409,6 +424,8 @@ class MainActivity : AppCompatActivity() {
                 binding.switchWheel.isChecked = gyroManager.wheelEnabled
                 binding.seekWheelSensitivity.progress = ((gyroManager.wheelSensitivity - 0.5f) / 4.5f * 100).toInt()
                 binding.seekWheelSensitivity.isEnabled = gyroManager.wheelEnabled
+                binding.seekWheelThreshold.progress = ((gyroManager.wheelThreshold - 0.1f) / 0.9f * 100).toInt()
+                binding.seekWheelThreshold.isEnabled = gyroManager.wheelEnabled
             }
             
             binding.btnConnect.text = "断开连接"

@@ -212,6 +212,23 @@
                         android:layout_height="wrap_content"
                         android:max="100"
                         android:progress="20"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- 滚轮触发阈值 -->
+                    <TextView
+                        android:id="@+id/tvWheelThreshold"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="滚轮触发阈值: 0.3"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="4dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekWheelThreshold"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="30"
                         android:layout_marginBottom="16dp" />
 
                     <Button

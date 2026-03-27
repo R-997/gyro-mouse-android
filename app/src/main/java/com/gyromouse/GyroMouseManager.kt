@@ -97,10 +97,18 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
     
     // 滚轮设置
     var wheelEnabled = true      // 是否启用Y轴滚轮
-    var wheelSensitivity = 2.0f  // 滚轮灵敏度
-    var wheelThreshold = 0.3f    // 触发滚轮的最小Y轴角度 (rad/s)
-    private var lastWheelTime = 0L
-    private val wheelIntervalMs = 50L  // 滚轮发送间隔（控制滚动速度）
+    var wheelSensitivity = 2.0f  // 滚轮灵敏度（影响滚动速度）
+    var wheelThreshold = 0.3f    // 触发滚轮的最小Y轴角度 (rad/s)，可调
+    
+    // 持续滚动模式
+    private var wheelRunnable: Runnable? = null
+    private var currentWheelDirection = 0  // 当前滚动方向：-1=上, 0=停止, 1=下
+    private var currentWheelSpeed = 1      // 当前滚动速度（1-3）
+    private val baseWheelIntervalMs = 100L // 基础滚动间隔
+    
+    // 使用加速度计测量倾斜角度（更稳定）
+    private var currentTiltAngle = 0f      // 当前倾斜角度（通过加速度计计算）
+    private var belowThresholdCount = 0    // 连续低于阈值的次数（用于迟滞）
     
     // 按钮状态
     private var leftButton = false
@@ -474,22 +482,7 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                 if (dt > 0 && dt < 0.1f) {  // 防止异常值
                     // 陀螺仪数据 (rad/s) 转换为角速度
                     val gyroX = event.values[0]  // 绕 X 轴 (俯仰) -> 控制上下
-                    val gyroY = event.values[1]  // 绕 Y 轴 (滚转/歪头) -> 控制滚轮
                     val gyroZ = event.values[2]  // 绕 Z 轴 (偏航/水平旋转) -> 控制左右
-                    
-                    // 处理滚轮（Y轴 - 左右倾斜/歪头）
-                    var wheelDelta = 0
-                    if (wheelEnabled) {
-                        val currentTimeMs = System.currentTimeMillis()
-                        if (abs(gyroY) > wheelThreshold && currentTimeMs - lastWheelTime > wheelIntervalMs) {
-                            // 左歪头(-Y) = 向上滚，右歪头(+Y) = 向下滚
-                            wheelDelta = if (gyroY > 0) 1 else -1
-                            // 根据倾斜程度调整滚动速度
-                            val intensity = ((abs(gyroY) - wheelThreshold) * wheelSensitivity).toInt().coerceIn(1, 3)
-                            wheelDelta *= intensity
-                            lastWheelTime = currentTimeMs
-                        }
-                    }
                     
                     // 鼠标移动映射：
                     // - X 轴 (俯仰) 控制 上下移动 (Y)
@@ -505,14 +498,48 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                     val dx = (velocityX * dt).toInt().coerceIn(-127, 127)
                     val dy = (velocityY * dt).toInt().coerceIn(-127, 127)
                     
-                    if (dx != 0 || dy != 0 || wheelDelta != 0) {
-                        sendMouseMove(dx, dy, wheelDelta)
+                    // 发送鼠标移动
+                    if (dx != 0 || dy != 0) {
+                        sendMouseMove(dx, dy, 0)
                         listener?.onSensorData(dx.toFloat(), dy.toFloat())
                     }
                 }
             }
             Sensor.TYPE_ACCELEROMETER -> {
-                // 可以在这里添加基于加速度计的功能
+                // 使用加速度计计算倾斜角度（更稳定）
+                val ax = event.values[0]  // X轴加速度
+                val ay = event.values[1]  // Y轴加速度
+                val az = event.values[2]  // Z轴加速度
+                
+                // 计算绕Y轴的倾斜角度（左右歪头）
+                // atan2(ax, sqrt(ay*ay + az*az)) 给出绕Y轴的倾斜
+                currentTiltAngle = atan2(ax, sqrt(ay*ay + az*az))
+                
+                // 处理滚轮（基于倾斜角度）
+                if (wheelEnabled) {
+                    val absTilt = abs(currentTiltAngle)
+                    if (absTilt > wheelThreshold) {
+                        // 超过阈值，启动持续滚动
+                        belowThresholdCount = 0  // 重置计数
+                        val newDirection = if (currentTiltAngle > 0) 1 else -1
+                        val newSpeed = ((absTilt - wheelThreshold) * wheelSensitivity * 2).toInt().coerceIn(1, 3)
+                        
+                        if (wheelRunnable == null || newDirection != currentWheelDirection || newSpeed != currentWheelSpeed) {
+                            startContinuousWheel(newDirection, newSpeed)
+                        }
+                    } else {
+                        // 低于阈值，增加计数（迟滞机制）
+                        belowThresholdCount++
+                        // 需要连续3次低于阈值才停止，避免抖动
+                        if (belowThresholdCount >= 3) {
+                            stopContinuousWheel()
+                            belowThresholdCount = 0
+                        }
+                    }
+                } else {
+                    stopContinuousWheel()
+                    belowThresholdCount = 0
+                }
             }
         }
     }
@@ -563,12 +590,58 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         return connectedDevice
     }
 
+    /**
+     * 启动持续滚轮滚动
+     * @param direction 滚动方向: -1=向上, 1=向下
+     * @param speed 滚动速度: 1-3
+     */
+    private fun startContinuousWheel(direction: Int, speed: Int) {
+        // 停止之前的滚轮
+        stopContinuousWheel()
+        
+        currentWheelDirection = direction
+        currentWheelSpeed = speed
+        
+        Log.d(TAG, "启动持续滚轮: direction=$direction, speed=$speed")
+        
+        wheelRunnable = object : Runnable {
+            override fun run() {
+                // 发送滚轮事件
+                val wheelDelta = currentWheelDirection * currentWheelSpeed
+                Log.d(TAG, "滚轮滚动: delta=$wheelDelta")
+                sendMouseMove(0, 0, wheelDelta)
+                
+                // 计算下次滚动间隔（速度越快，间隔越短）
+                val interval = (baseWheelIntervalMs / currentWheelSpeed).coerceAtLeast(30L)
+                handler.postDelayed(this, interval)
+            }
+        }
+        
+        // 立即执行第一次
+        handler.post(wheelRunnable!!)
+    }
+    
+    /**
+     * 停止持续滚轮滚动
+     */
+    private fun stopContinuousWheel() {
+        if (wheelRunnable != null) {
+            Log.d(TAG, "停止持续滚轮")
+            handler.removeCallbacks(wheelRunnable!!)
+            wheelRunnable = null
+        }
+        currentWheelDirection = 0
+        currentWheelSpeed = 1
+    }
+
     fun cleanup() {
         Log.d(TAG, "清理资源")
         // 保存设置
         saveDeviceSettings(connectedDevice?.address)
         // 取消超时
         connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        // 停止滚轮
+        stopContinuousWheel()
         stopSensors()
         disconnect()
         hidDevice?.let { device ->
