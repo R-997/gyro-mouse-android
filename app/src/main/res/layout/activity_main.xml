@@ -148,7 +148,7 @@
                         android:id="@+id/tvSensitivity"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="灵敏度: 2.0"
+                        android:text="灵敏度: 3.5"
                         android:layout_marginBottom="4dp" />
 
                     <SeekBar
@@ -173,6 +173,127 @@
                         android:layout_height="wrap_content"
                         android:max="100"
                         android:progress="30"
+                        android:layout_marginBottom="24dp" />
+
+                    <!-- ===== 抖动优化设置 ===== -->
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@android:color/darker_gray"
+                        android:alpha="0.3"
+                        android:layout_marginBottom="16dp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="抖动优化"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- 死区 -->
+                    <TextView
+                        android:id="@+id/tvDeadZone"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="死区: 0.05"
+                        android:textSize="13sp"
+                        android:layout_marginBottom="4dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekDeadZone"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="21"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- 速度衰减 -->
+                    <TextView
+                        android:id="@+id/tvVelocityDecay"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="速度衰减: 85%"
+                        android:textSize="13sp"
+                        android:layout_marginBottom="4dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekVelocityDecay"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="71"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- 自适应平滑开关 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="自适应平滑"
+                            android:textSize="13sp" />
+
+                        <Switch
+                            android:id="@+id/switchAdaptiveSmoothing"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+
+                    </LinearLayout>
+
+                    <!-- 传感器融合开关 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="传感器融合"
+                            android:textSize="13sp" />
+
+                        <Switch
+                            android:id="@+id/switchSensorFusion"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+
+                    </LinearLayout>
+
+                    <!-- 融合系数 -->
+                    <TextView
+                        android:id="@+id/tvFusionAlpha"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="融合系数: 2%"
+                        android:textSize="12sp"
+                        android:textColor="@android:color/darker_gray"
+                        android:layout_marginBottom="4dp" />
+
+                    <SeekBar
+                        android:id="@+id/seekFusionAlpha"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="100"
+                        android:progress="2"
+                        android:layout_marginBottom="16dp" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@android:color/darker_gray"
+                        android:alpha="0.3"
                         android:layout_marginBottom="16dp" />
 
                     <!-- 滚轮控制开关 -->
@@ -211,7 +332,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:max="100"
-                        android:progress="20"
+                        android:progress="33"
                         android:layout_marginBottom="12dp" />
 
                     <!-- 滚轮触发阈值 -->
@@ -228,7 +349,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:max="100"
-                        android:progress="30"
+                        android:progress="22"
                         android:layout_marginBottom="16dp" />
 
                     <Button
@@ -328,7 +449,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="• 左右倾斜手机控制鼠标左右移动\n• 前后倾斜手机控制鼠标上下移动\n• 左右歪头控制滚轮滚动\n• 按住下方按钮进行点击\n• 调整灵敏度获得最佳体验"
+                        android:text="• 左右倾斜手机控制鼠标左右移动\n• 前后倾斜手机控制鼠标上下移动\n• 左右歪头控制滚轮滚动\n• 按住下方按钮进行点击\n• 调整灵敏度和死区获得最佳体验\n• 增大死区可减少微小抖动"
                         android:textSize="14sp"
                         android:lineSpacingMultiplier="1.3" />
 

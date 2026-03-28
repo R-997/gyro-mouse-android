@@ -22,44 +22,58 @@ import kotlin.math.*
 /**
  * GyroMouseManager - 核心管理类
  * 整合传感器数据和蓝牙 HID 鼠标功能
+ * 
+ * 特性：
+ * 1. 传感器融合 - 互补滤波器融合陀螺仪和加速度计
+ * 2. 抖动优化 - 死区、自适应平滑、速度衰减
+ * 3. 滚轮控制 - 基于倾斜角度
  */
 class GyroMouseManager(private val context: Context) : SensorEventListener {
 
     companion object {
         const val TAG = "GyroMouse"
         const val HID_REPORT_ID = 1
-        const val CONNECT_TIMEOUT_MS = 8000L  // 8秒连接超时（系统通常8秒超时）
+        const val CONNECT_TIMEOUT_MS = 8000L
         
-        // 鼠标报告描述符（标准 USB HID Mouse）
+        // 互补滤波器系数 (0-1)，越大越信任加速度计
+        const val COMPLEMENTARY_ALPHA = 0.02f
+        
+        // 鼠标报告描述符
         val MOUSE_REPORT_DESCRIPTOR = byteArrayOf(
-            0x05.toByte(), 0x01.toByte(),        // Usage Page (Generic Desktop)
-            0x09.toByte(), 0x02.toByte(),        // Usage (Mouse)
-            0xA1.toByte(), 0x01.toByte(),        // Collection (Application)
-            0x09.toByte(), 0x01.toByte(),        //   Usage (Pointer)
-            0xA1.toByte(), 0x00.toByte(),        //   Collection (Physical)
-            0x05.toByte(), 0x09.toByte(),        //     Usage Page (Button)
-            0x19.toByte(), 0x01.toByte(),        //     Usage Minimum (1)
-            0x29.toByte(), 0x03.toByte(),        //     Usage Maximum (3)
-            0x15.toByte(), 0x00.toByte(),        //     Logical Minimum (0)
-            0x25.toByte(), 0x01.toByte(),        //     Logical Maximum (1)
-            0x95.toByte(), 0x03.toByte(),        //     Report Count (3)
-            0x75.toByte(), 0x01.toByte(),        //     Report Size (1)
-            0x81.toByte(), 0x02.toByte(),        //     Input (Data, Variable, Absolute)
-            0x95.toByte(), 0x01.toByte(),        //     Report Count (1)
-            0x75.toByte(), 0x05.toByte(),        //     Report Size (5)
-            0x81.toByte(), 0x03.toByte(),        //     Input (Constant, Variable, Absolute)
-            0x05.toByte(), 0x01.toByte(),        //     Usage Page (Generic Desktop)
-            0x09.toByte(), 0x30.toByte(),        //     Usage (X)
-            0x09.toByte(), 0x31.toByte(),        //     Usage (Y)
-            0x09.toByte(), 0x38.toByte(),        //     Usage (Wheel)
-            0x15.toByte(), 0x81.toByte(),        //     Logical Minimum (-127)
-            0x25.toByte(), 0x7F.toByte(),        //     Logical Maximum (127)
-            0x75.toByte(), 0x08.toByte(),        //     Report Size (8)
-            0x95.toByte(), 0x03.toByte(),        //     Report Count (3)
-            0x81.toByte(), 0x06.toByte(),        //     Input (Data, Variable, Relative)
-            0xC0.toByte(),                       //   End Collection
-            0xC0.toByte()                        // End Collection
+            0x05.toByte(), 0x01.toByte(),
+            0x09.toByte(), 0x02.toByte(),
+            0xA1.toByte(), 0x01.toByte(),
+            0x09.toByte(), 0x01.toByte(),
+            0xA1.toByte(), 0x00.toByte(),
+            0x05.toByte(), 0x09.toByte(),
+            0x19.toByte(), 0x01.toByte(),
+            0x29.toByte(), 0x03.toByte(),
+            0x15.toByte(), 0x00.toByte(),
+            0x25.toByte(), 0x01.toByte(),
+            0x95.toByte(), 0x03.toByte(),
+            0x75.toByte(), 0x01.toByte(),
+            0x81.toByte(), 0x02.toByte(),
+            0x95.toByte(), 0x01.toByte(),
+            0x75.toByte(), 0x05.toByte(),
+            0x81.toByte(), 0x03.toByte(),
+            0x05.toByte(), 0x01.toByte(),
+            0x09.toByte(), 0x30.toByte(),
+            0x09.toByte(), 0x31.toByte(),
+            0x09.toByte(), 0x38.toByte(),
+            0x15.toByte(), 0x81.toByte(),
+            0x25.toByte(), 0x7F.toByte(),
+            0x75.toByte(), 0x08.toByte(),
+            0x95.toByte(), 0x03.toByte(),
+            0x81.toByte(), 0x06.toByte(),
+            0xC0.toByte(),
+            0xC0.toByte()
         )
+        
+        // 默认参数
+        const val DEFAULT_DEAD_ZONE = 0.05f
+        const val DEFAULT_VELOCITY_DECAY = 0.85f
+        const val DEFAULT_JITTER_THRESHOLD = 0.3f
+        const val DEFAULT_USE_SENSOR_FUSION = true
     }
 
     interface ConnectionListener {
@@ -84,44 +98,61 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
     private val handler = Handler(Looper.getMainLooper())
     private var connectTimeoutRunnable: Runnable? = null
     
-    // 传感器融合参数
+    // ===== 传感器融合姿态角 =====
+    private var pitch = 0f    // 俯仰角 (绕X轴)
+    private var roll = 0f     // 横滚角 (绕Y轴)
+    private var yaw = 0f      // 偏航角 (绕Z轴)
     private var lastTimestamp = 0L
+    
+    // 原始传感器数据缓存
+    private var accelData = FloatArray(3)
+    private var gyroData = FloatArray(3)
+    private var hasAccelData = false
+    private var hasGyroData = false
+    
+    // 鼠标移动速度
     private var velocityX = 0f
     private var velocityY = 0f
-    private var positionX = 0f
-    private var positionY = 0f
+    private val velocityHistoryX = ArrayDeque<Float>(5)
+    private val velocityHistoryY = ArrayDeque<Float>(5)
     
-    // 灵敏度设置 (0.5 - 10.0)，默认更高
+    // 上一次陀螺仪值（用于抖动检测）
+    private var lastGyroX = 0f
+    private var lastGyroZ = 0f
+    private var stationaryFrames = 0
+    
+    // ===== 设置参数 =====
     var sensitivity = 3.5f
-    var smoothingFactor = 0.3f  // 平滑系数
+    var smoothingFactor = 0.3f
+    var deadZone = DEFAULT_DEAD_ZONE
+    var velocityDecay = DEFAULT_VELOCITY_DECAY
+    var jitterThreshold = DEFAULT_JITTER_THRESHOLD
+    var useAdaptiveSmoothing = true
+    var useSensorFusion = DEFAULT_USE_SENSOR_FUSION  // 是否使用传感器融合
+    var fusionAlpha = COMPLEMENTARY_ALPHA              // 融合系数
     
     // 滚轮设置
-    var wheelEnabled = true      // 是否启用Y轴滚轮
-    var wheelSensitivity = 2.0f  // 滚轮灵敏度（影响滚动速度）
-    var wheelThreshold = 0.3f    // 触发滚轮的最小Y轴角度 (rad/s)，可调
+    var wheelEnabled = true
+    var wheelSensitivity = 2.0f
+    var wheelThreshold = 0.3f
     
-    // 持续滚动模式
     private var wheelRunnable: Runnable? = null
-    private var currentWheelDirection = 0  // 当前滚动方向：-1=上, 0=停止, 1=下
-    private var currentWheelSpeed = 1      // 当前滚动速度（1-3）
-    private val baseWheelIntervalMs = 100L // 基础滚动间隔
-    
-    // 使用加速度计测量倾斜角度（更稳定）
-    private var currentTiltAngle = 0f      // 当前倾斜角度（通过加速度计计算）
-    private var belowThresholdCount = 0    // 连续低于阈值的次数（用于迟滞）
+    private var currentWheelDirection = 0
+    private var currentWheelSpeed = 1
+    private val baseWheelIntervalMs = 100L
+    private var belowThresholdCount = 0
     
     // 按钮状态
     private var leftButton = false
     private var rightButton = false
     private var middleButton = false
+    
+    private val stationaryThreshold = 5
 
     fun setListener(listener: ConnectionListener) {
         this.listener = listener
     }
     
-    /**
-     * 加载设备特定设置
-     */
     fun loadDeviceSettings(deviceAddress: String?) {
         deviceAddress?.let { addr ->
             sensitivity = prefs.getFloat("sensitivity_$addr", 3.5f)
@@ -129,13 +160,16 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
             wheelEnabled = prefs.getBoolean("wheel_enabled_$addr", true)
             wheelSensitivity = prefs.getFloat("wheel_sensitivity_$addr", 2.0f)
             wheelThreshold = prefs.getFloat("wheel_threshold_$addr", 0.3f)
-            Log.d(TAG, "加载设备 $addr 设置: sensitivity=$sensitivity, wheelEnabled=$wheelEnabled")
+            deadZone = prefs.getFloat("dead_zone_$addr", DEFAULT_DEAD_ZONE)
+            velocityDecay = prefs.getFloat("velocity_decay_$addr", DEFAULT_VELOCITY_DECAY)
+            jitterThreshold = prefs.getFloat("jitter_threshold_$addr", DEFAULT_JITTER_THRESHOLD)
+            useAdaptiveSmoothing = prefs.getBoolean("adaptive_smoothing_$addr", true)
+            useSensorFusion = prefs.getBoolean("sensor_fusion_$addr", DEFAULT_USE_SENSOR_FUSION)
+            fusionAlpha = prefs.getFloat("fusion_alpha_$addr", COMPLEMENTARY_ALPHA)
+            Log.d(TAG, "加载设备 $addr 设置: fusion=$useSensorFusion")
         }
     }
     
-    /**
-     * 保存设备特定设置
-     */
     fun saveDeviceSettings(deviceAddress: String?) {
         deviceAddress?.let { addr ->
             prefs.edit().apply {
@@ -144,118 +178,80 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                 putBoolean("wheel_enabled_$addr", wheelEnabled)
                 putFloat("wheel_sensitivity_$addr", wheelSensitivity)
                 putFloat("wheel_threshold_$addr", wheelThreshold)
+                putFloat("dead_zone_$addr", deadZone)
+                putFloat("velocity_decay_$addr", velocityDecay)
+                putFloat("jitter_threshold_$addr", jitterThreshold)
+                putBoolean("adaptive_smoothing_$addr", useAdaptiveSmoothing)
+                putBoolean("sensor_fusion_$addr", useSensorFusion)
+                putFloat("fusion_alpha_$addr", fusionAlpha)
                 apply()
             }
-            Log.d(TAG, "保存设备 $addr 设置: sensitivity=$sensitivity, wheelEnabled=$wheelEnabled")
         }
     }
 
-    /**
-     * 初始化 HID 设备
-     */
     fun initHidDevice(callback: (success: Boolean, error: String?) -> Unit) {
         Log.d(TAG, "=== 开始初始化 HID ===")
-        Log.d(TAG, "Android 版本: ${Build.VERSION.SDK_INT} (需要 >= 28)")
         
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            Log.e(TAG, "Android 版本过低")
             callback(false, "需要 Android 9.0 (API 28) 或更高版本")
             return
         }
 
-        // 检查蓝牙 LE 支持
-        val hasBle = context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-        Log.d(TAG, "支持蓝牙 LE: $hasBle")
-        if (!hasBle) {
+        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
             callback(false, "设备不支持蓝牙低功耗")
             return
         }
 
-        // HID Device 支持检查（暂时跳过，让注册时自然失败）
-        Log.d(TAG, "检查 HID Device 支持（将在注册时确认）")
-
         if (bluetoothAdapter == null) {
-            Log.e(TAG, "蓝牙适配器为空")
             callback(false, "蓝牙不可用")
             return
         }
 
-        Log.d(TAG, "蓝牙适配器: ${bluetoothAdapter.name}, 地址: ${bluetoothAdapter.address}")
-        Log.d(TAG, "蓝牙是否开启: ${bluetoothAdapter.isEnabled}")
-
         if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "缺少蓝牙权限")
             callback(false, "缺少蓝牙权限")
             return
         }
 
         if (!bluetoothAdapter.isEnabled) {
-            Log.e(TAG, "蓝牙未开启")
             callback(false, "请开启蓝牙")
             return
         }
 
-        // 注册 HID 设备
         try {
-            Log.d(TAG, "正在获取 HID Device Profile...")
-            
             val serviceListener = object : BluetoothHidDevice.Callback() {
                 override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-                    Log.d(TAG, "HID App 状态变化: registered=$registered, pluggedDevice=$pluggedDevice")
                     handler.post {
                         if (registered) {
                             Log.i(TAG, "HID 设备注册成功！")
-                            // 注册成功后设置可发现
                             setDiscoverable(300)
                             callback(true, null)
                         } else {
-                            // 只有在 App 正常运行时才回调失败（避免退出时弹窗）
                             if (hidDevice != null) {
-                                Log.e(TAG, "HID 设备注册失败")
                                 callback(false, "HID 设备注册失败")
-                            } else {
-                                Log.d(TAG, "HID 设备注销（正常退出）")
                             }
                         }
                     }
                 }
 
                 override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
-                    val stateStr = when (state) {
-                        BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
-                        BluetoothProfile.STATE_CONNECTING -> "CONNECTING"
-                        BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
-                        BluetoothProfile.STATE_DISCONNECTING -> "DISCONNECTING"
-                        else -> "UNKNOWN($state)"
-                    }
-                    Log.d(TAG, "连接状态变化: ${device.name} -> $stateStr")
-                    
                     handler.post {
                         when (state) {
                             BluetoothProfile.STATE_CONNECTED -> {
-                                // 取消超时计时
                                 connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
                                 connectTimeoutRunnable = null
-                                
                                 Log.i(TAG, "已连接到: ${device.name}")
                                 connectedDevice = device
-                                // 加载设备设置
                                 loadDeviceSettings(device.address)
                                 listener?.onConnectionStateChanged(true)
                                 startSensors()
                             }
                             BluetoothProfile.STATE_CONNECTING -> {
-                                // 开始超时计时
                                 startConnectTimeout()
                             }
                             BluetoothProfile.STATE_DISCONNECTED -> {
-                                // 取消超时计时
                                 connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
                                 connectTimeoutRunnable = null
-                                
-                                // 保存当前设备设置
                                 saveDeviceSettings(connectedDevice?.address)
-                                
                                 Log.i(TAG, "已断开连接")
                                 connectedDevice = null
                                 listener?.onConnectionStateChanged(false)
@@ -265,36 +261,16 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                     }
                 }
 
-                override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
-                    Log.d(TAG, "onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
-                }
-
-                override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) {
-                    Log.d(TAG, "onSetReport: type=$type, id=$id")
-                }
-
-                override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) {
-                    Log.d(TAG, "onSetProtocol: protocol=$protocol")
-                }
-
-                // 注意：onIntrData 在某些 API 版本中不存在，暂时注释
-                // override fun onIntrData(device: BluetoothDevice, reportId: Byte, data: ByteArray) {
-                //     Log.d(TAG, "onIntrData: reportId=$reportId, data=${data.contentToString()}")
-                // }
-
-                override fun onVirtualCableUnplug(device: BluetoothDevice) {
-                    Log.d(TAG, "onVirtualCableUnplug: ${device.name}")
-                }
+                override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {}
+                override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray?) {}
+                override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) {}
+                override fun onVirtualCableUnplug(device: BluetoothDevice) {}
             }
 
             val profileListener = object : BluetoothProfile.ServiceListener {
                 override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                    Log.d(TAG, "Service connected: profile=$profile")
                     if (profile == BluetoothProfile.HID_DEVICE) {
                         hidDevice = proxy as BluetoothHidDevice
-                        Log.i(TAG, "HID Device Profile 已获取")
-                        
-                        // 注册 HID 应用
                         val appParameters = BluetoothHidDeviceAppSdpSettings(
                             "Gyro Mouse",
                             "Gyro Mouse HID",
@@ -302,35 +278,22 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
                             BluetoothHidDevice.SUBCLASS1_MOUSE,
                             MOUSE_REPORT_DESCRIPTOR
                         )
-                        
-                        // QoS 设置 - 对 Win10 很重要
                         val qosOut = BluetoothHidDeviceAppQosSettings(
                             BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
                             0, 0, 0, 0, 0
                         )
-                        
-                        Log.d(TAG, "正在注册 HID App...")
-                        val success = hidDevice?.registerApp(
-                            appParameters, 
-                            null,  // qosIn - 输入 QoS
-                            qosOut,  // qosOut - 输出 QoS  
-                            Runnable::run, 
-                            serviceListener
-                        )
-                        Log.d(TAG, "registerApp 返回: $success")
+                        hidDevice?.registerApp(appParameters, null, qosOut, Runnable::run, serviceListener)
                     }
                 }
 
                 override fun onServiceDisconnected(profile: Int) {
-                    Log.d(TAG, "Service disconnected: profile=$profile")
                     if (profile == BluetoothProfile.HID_DEVICE) {
                         hidDevice = null
                     }
                 }
             }
 
-            val result = bluetoothAdapter.getProfileProxy(context, profileListener, BluetoothProfile.HID_DEVICE)
-            Log.d(TAG, "getProfileProxy 结果: $result")
+            bluetoothAdapter.getProfileProxy(context, profileListener, BluetoothProfile.HID_DEVICE)
             
         } catch (e: Exception) {
             Log.e(TAG, "初始化失败: ${e.message}", e)
@@ -341,57 +304,36 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
     private fun startConnectTimeout() {
         connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
         connectTimeoutRunnable = Runnable {
-            Log.w(TAG, "连接超时（${CONNECT_TIMEOUT_MS}ms）")
+            Log.w(TAG, "连接超时")
             listener?.onConnectionTimeout()
         }
         handler.postDelayed(connectTimeoutRunnable!!, CONNECT_TIMEOUT_MS)
     }
 
-    /**
-     * 连接指定设备
-     */
     fun connectToDevice(device: BluetoothDevice): Boolean {
-        Log.d(TAG, "=== 尝试连接设备 ===")
-        Log.d(TAG, "设备名称: ${device.name}")
-        Log.d(TAG, "设备地址: ${device.address}")
-        Log.d(TAG, "HID 设备对象: $hidDevice")
-        
         if (hidDevice == null) {
-            Log.e(TAG, "HID 设备未初始化，无法连接")
             listener?.onError("请先初始化 HID 设备")
             return false
         }
         
         if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "缺少蓝牙权限")
             listener?.onError("缺少蓝牙权限")
             return false
         }
 
         return try {
-            Log.d(TAG, "调用 hidDevice.connect()...")
-            val result = hidDevice?.connect(device)
-            Log.d(TAG, "connect() 返回: $result")
-            result ?: false
+            hidDevice?.connect(device) ?: false
         } catch (e: SecurityException) {
-            Log.e(TAG, "连接失败(权限): ${e.message}")
             listener?.onError("缺少连接权限: ${e.message}")
             false
         } catch (e: Exception) {
-            Log.e(TAG, "连接失败: ${e.message}", e)
             listener?.onError("连接失败: ${e.message}")
             false
         }
     }
 
-    /**
-     * 断开连接
-     */
     fun disconnect() {
-        Log.d(TAG, "断开连接")
-        // 保存设置
         saveDeviceSettings(connectedDevice?.address)
-        
         connectedDevice?.let { device ->
             try {
                 hidDevice?.disconnect(device)
@@ -401,46 +343,45 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         }
     }
 
-    /**
-     * 启动传感器
-     */
     fun startSensors() {
-        Log.d(TAG, "启动传感器")
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         
         gyroscope?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-            Log.d(TAG, "陀螺仪已注册")
         }
         accelerometer?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-            Log.d(TAG, "加速度计已注册")
         }
         
         lastTimestamp = SystemClock.elapsedRealtimeNanos()
+        resetMotionState()
     }
 
-    /**
-     * 停止传感器
-     */
     fun stopSensors() {
-        Log.d(TAG, "停止传感器")
         sensorManager.unregisterListener(this)
+        resetMotionState()
+    }
+    
+    private fun resetMotionState() {
+        pitch = 0f
+        roll = 0f
+        yaw = 0f
         velocityX = 0f
         velocityY = 0f
-        positionX = 0f
-        positionY = 0f
+        velocityHistoryX.clear()
+        velocityHistoryY.clear()
+        lastGyroX = 0f
+        lastGyroZ = 0f
+        stationaryFrames = 0
+        hasAccelData = false
+        hasGyroData = false
     }
 
-    /**
-     * 发送鼠标移动
-     */
     fun sendMouseMove(deltaX: Int, deltaY: Int, wheel: Int = 0) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
 
-        // HID 鼠标报告格式: [buttons, x, y, wheel]
         val report = ByteArray(4)
         report[0] = ((if (leftButton) 1 else 0) or 
                      (if (rightButton) 2 else 0) or 
@@ -453,95 +394,250 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
             hid.sendReport(device, HID_REPORT_ID, report)
         } catch (e: SecurityException) {
             Log.e(TAG, "发送报告失败: ${e.message}")
-            listener?.onError("发送报告失败")
         }
     }
 
-    /**
-     * 设置按钮状态
-     */
     fun setButton(left: Boolean? = null, right: Boolean? = null, middle: Boolean? = null) {
         left?.let { leftButton = it }
         right?.let { rightButton = it }
         middle?.let { middleButton = it }
-        
-        // 立即发送按钮状态更新
         sendMouseMove(0, 0, 0)
     }
 
     /**
-     * 传感器数据处理
+     * 传感器数据回调
      */
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_GYROSCOPE -> {
-                val currentTime = event.timestamp
-                val dt = (currentTime - lastTimestamp) / 1_000_000_000f  // 转换为秒
-                lastTimestamp = currentTime
-
-                if (dt > 0 && dt < 0.1f) {  // 防止异常值
-                    // 陀螺仪数据 (rad/s) 转换为角速度
-                    val gyroX = event.values[0]  // 绕 X 轴 (俯仰) -> 控制上下
-                    val gyroZ = event.values[2]  // 绕 Z 轴 (偏航/水平旋转) -> 控制左右
-                    
-                    // 鼠标移动映射：
-                    // - X 轴 (俯仰) 控制 上下移动 (Y)
-                    // - Z 轴 (水平旋转) 控制 左右移动 (X)
-                    val targetVelX = -gyroZ * sensitivity * 100  // Z轴控制左右，反转方向
-                    val targetVelY = -gyroX * sensitivity * 100  // X轴控制上下
-                    
-                    // 简单平滑
-                    velocityX += (targetVelX - velocityX) * smoothingFactor
-                    velocityY += (targetVelY - velocityY) * smoothingFactor
-                    
-                    // 计算位移
-                    val dx = (velocityX * dt).toInt().coerceIn(-127, 127)
-                    val dy = (velocityY * dt).toInt().coerceIn(-127, 127)
-                    
-                    // 发送鼠标移动
-                    if (dx != 0 || dy != 0) {
-                        sendMouseMove(dx, dy, 0)
-                        listener?.onSensorData(dx.toFloat(), dy.toFloat())
-                    }
-                }
+                gyroData[0] = event.values[0]
+                gyroData[1] = event.values[1]
+                gyroData[2] = event.values[2]
+                hasGyroData = true
             }
             Sensor.TYPE_ACCELEROMETER -> {
-                // 使用加速度计计算倾斜角度（更稳定）
-                val ax = event.values[0]  // X轴加速度
-                val ay = event.values[1]  // Y轴加速度
-                val az = event.values[2]  // Z轴加速度
+                accelData[0] = event.values[0]
+                accelData[1] = event.values[1]
+                accelData[2] = event.values[2]
+                hasAccelData = true
                 
-                // 计算绕Y轴的倾斜角度（左右歪头）
-                // atan2(ax, sqrt(ay*ay + az*az)) 给出绕Y轴的倾斜
-                currentTiltAngle = atan2(ax, sqrt(ay*ay + az*az))
+                // 处理滚轮（基于加速度计）
+                processWheelControl()
+            }
+        }
+        
+        // 当两种数据都有时，执行融合
+        if (hasGyroData && hasAccelData) {
+            processSensorFusion()
+        }
+    }
+    
+    /**
+     * 互补滤波器传感器融合
+     * 结合陀螺仪（快速响应）和加速度计（无漂移）的优势
+     */
+    private fun processSensorFusion() {
+        val currentTime = SystemClock.elapsedRealtimeNanos()
+        val dt = (currentTime - lastTimestamp) / 1_000_000_000f
+        lastTimestamp = currentTime
+        
+        if (dt <= 0 || dt > 0.1f) return
+        
+        val gyroX = gyroData[0]  // 绕X轴角速度
+        val gyroY = gyroData[1]  // 绕Y轴角速度
+        val gyroZ = gyroData[2]  // 绕Z轴角速度
+        
+        val ax = accelData[0]
+        val ay = accelData[1]
+        val az = accelData[2]
+        
+        if (useSensorFusion) {
+            // ===== 互补滤波器融合 =====
+            // 1. 从加速度计计算姿态角（仅当加速度接近重力时可靠）
+            val accelPitch = atan2(-ax, sqrt(ay * ay + az * az))
+            val accelRoll = atan2(ay, az)
+            
+            // 2. 陀螺仪积分更新姿态
+            // 将陀螺仪数据（rad/s）转换为角度变化
+            val gyroPitchDelta = gyroX * dt
+            val gyroRollDelta = gyroY * dt
+            val gyroYawDelta = gyroZ * dt
+            
+            // 3. 互补滤波器融合
+            // pitch/roll: 高频用陀螺仪，低频用加速度计
+            pitch = (1 - fusionAlpha) * (pitch + gyroPitchDelta) + fusionAlpha * accelPitch
+            roll = (1 - fusionAlpha) * (roll + gyroRollDelta) + fusionAlpha * accelRoll
+            
+            // yaw: 只有陀螺仪能测（加速度计无法检测水平旋转）
+            yaw += gyroYawDelta
+            
+            // 4. 基于融合后的姿态角变化率计算鼠标速度
+            // 使用姿态角的变化作为鼠标移动的基础
+            val pitchVelocity = gyroX  // 俯仰角速度控制Y轴
+            val yawVelocity = gyroZ     // 偏航角速度控制X轴
+            
+            // 死区处理
+            val deadZonedPitch = applyDeadZone(pitchVelocity, deadZone)
+            val deadZonedYaw = applyDeadZone(yawVelocity, deadZone)
+            
+            // 计算目标速度
+            val targetVelX = -deadZonedYaw * sensitivity * 100
+            val targetVelY = -deadZonedPitch * sensitivity * 100
+            
+            processMouseMovement(targetVelX, targetVelY, gyroX, gyroZ, dt)
+            
+        } else {
+            // 传统模式：只用陀螺仪
+            val rawGyroX = gyroX
+            val rawGyroZ = gyroZ
+            
+            val gyroXDead = applyDeadZone(rawGyroX, deadZone)
+            val gyroZDead = applyDeadZone(rawGyroZ, deadZone)
+            
+            val targetVelX = -gyroZDead * sensitivity * 100
+            val targetVelY = -gyroXDead * sensitivity * 100
+            
+            processMouseMovement(targetVelX, targetVelY, rawGyroX, rawGyroZ, dt)
+        }
+    }
+    
+    /**
+     * 处理鼠标移动（抖动优化）
+     */
+    private fun processMouseMovement(
+        targetVelX: Float, 
+        targetVelY: Float,
+        rawGyroX: Float,
+        rawGyroZ: Float,
+        dt: Float
+    ) {
+        // 静止检测
+        if (abs(targetVelX) < 0.01f && abs(targetVelY) < 0.01f) {
+            stationaryFrames++
+            if (stationaryFrames >= stationaryThreshold) {
+                velocityX *= 0.5f
+                velocityY *= 0.5f
+                if (abs(velocityX) < 0.01f) velocityX = 0f
+                if (abs(velocityY) < 0.01f) velocityY = 0f
+                return
+            }
+        } else {
+            stationaryFrames = 0
+        }
+        
+        // 抖动检测
+        val isJitterX = detectJitter(rawGyroX, lastGyroX, jitterThreshold)
+        val isJitterZ = detectJitter(rawGyroZ, lastGyroZ, jitterThreshold)
+        lastGyroX = rawGyroX
+        lastGyroZ = rawGyroZ
+        
+        // 自适应平滑
+        val adaptiveSmoothing = if (useAdaptiveSmoothing) {
+            calculateAdaptiveSmoothing(targetVelX, targetVelY)
+        } else {
+            smoothingFactor
+        }
+        
+        val finalSmoothing = when {
+            isJitterX && isJitterZ -> adaptiveSmoothing * 1.5f
+            isJitterX || isJitterZ -> adaptiveSmoothing * 1.2f
+            else -> adaptiveSmoothing
+        }.coerceIn(0.1f, 0.95f)
+        
+        // 应用平滑
+        velocityX = lerp(velocityX, targetVelX, 1f - finalSmoothing)
+        velocityY = lerp(velocityY, targetVelY, 1f - finalSmoothing)
+        
+        // 中值滤波
+        velocityHistoryX.addLast(velocityX)
+        velocityHistoryY.addLast(velocityY)
+        if (velocityHistoryX.size > 5) velocityHistoryX.removeFirst()
+        if (velocityHistoryY.size > 5) velocityHistoryY.removeFirst()
+        
+        val filteredVelX = medianFilter(velocityHistoryX)
+        val filteredVelY = medianFilter(velocityHistoryY)
+        
+        // 速度衰减
+        velocityX = filteredVelX * velocityDecay
+        velocityY = filteredVelY * velocityDecay
+        
+        // 计算位移
+        val dx = (velocityX * dt).toInt().coerceIn(-127, 127)
+        val dy = (velocityY * dt).toInt().coerceIn(-127, 127)
+        
+        if (abs(dx) > 0 || abs(dy) > 0) {
+            sendMouseMove(dx, dy, 0)
+            listener?.onSensorData(dx.toFloat(), dy.toFloat())
+        }
+    }
+    
+    /**
+     * 滚轮控制（基于加速度计）
+     */
+    private fun processWheelControl() {
+        val ax = accelData[0]
+        val ay = accelData[1]
+        val az = accelData[2]
+        
+        val tiltAngle = atan2(ax, sqrt(ay * ay + az * az))
+        
+        if (wheelEnabled) {
+            val absTilt = abs(tiltAngle)
+            if (absTilt > wheelThreshold) {
+                belowThresholdCount = 0
+                val newDirection = if (tiltAngle > 0) 1 else -1
+                val newSpeed = ((absTilt - wheelThreshold) * wheelSensitivity * 2).toInt().coerceIn(1, 3)
                 
-                // 处理滚轮（基于倾斜角度）
-                if (wheelEnabled) {
-                    val absTilt = abs(currentTiltAngle)
-                    if (absTilt > wheelThreshold) {
-                        // 超过阈值，启动持续滚动
-                        belowThresholdCount = 0  // 重置计数
-                        val newDirection = if (currentTiltAngle > 0) 1 else -1
-                        val newSpeed = ((absTilt - wheelThreshold) * wheelSensitivity * 2).toInt().coerceIn(1, 3)
-                        
-                        if (wheelRunnable == null || newDirection != currentWheelDirection || newSpeed != currentWheelSpeed) {
-                            startContinuousWheel(newDirection, newSpeed)
-                        }
-                    } else {
-                        // 低于阈值，增加计数（迟滞机制）
-                        belowThresholdCount++
-                        // 需要连续3次低于阈值才停止，避免抖动
-                        if (belowThresholdCount >= 3) {
-                            stopContinuousWheel()
-                            belowThresholdCount = 0
-                        }
-                    }
-                } else {
+                if (wheelRunnable == null || newDirection != currentWheelDirection || newSpeed != currentWheelSpeed) {
+                    startContinuousWheel(newDirection, newSpeed)
+                }
+            } else {
+                belowThresholdCount++
+                if (belowThresholdCount >= 3) {
                     stopContinuousWheel()
                     belowThresholdCount = 0
                 }
             }
+        } else {
+            stopContinuousWheel()
         }
+    }
+    
+    // ===== 工具函数 =====
+    
+    private fun applyDeadZone(value: Float, threshold: Float): Float {
+        return when {
+            abs(value) < threshold -> 0f
+            value > 0 -> value - threshold
+            else -> value + threshold
+        }
+    }
+    
+    private fun detectJitter(current: Float, last: Float, threshold: Float): Boolean {
+        if (last == 0f) return false
+        val signChanged = (current > 0 && last < 0) || (current < 0 && last > 0)
+        val magnitudeLarge = abs(current) > threshold && abs(last) > threshold
+        return signChanged && magnitudeLarge
+    }
+    
+    private fun calculateAdaptiveSmoothing(velX: Float, velY: Float): Float {
+        val speed = sqrt(velX * velX + velY * velY)
+        return when {
+            speed < 50f -> 0.7f
+            speed < 150f -> 0.5f
+            speed < 300f -> 0.3f
+            else -> 0.15f
+        }
+    }
+    
+    private fun lerp(start: Float, end: Float, factor: Float): Float {
+        return start + (end - start) * factor
+    }
+    
+    private fun medianFilter(values: ArrayDeque<Float>): Float {
+        if (values.isEmpty()) return 0f
+        if (values.size < 3) return values.last()
+        return values.sorted()[values.size / 2]
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -558,9 +654,6 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         }
     }
 
-    /**
-     * 获取已配对设备列表
-     */
     fun getPairedDevices(): List<BluetoothDevice> {
         return if (hasBluetoothPermissions()) {
             bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
@@ -569,13 +662,8 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         }
     }
 
-    /**
-     * 设置蓝牙可发现性 - HID 设备需要保持可被发现
-     */
     fun setDiscoverable(durationSeconds: Int = 300) {
         try {
-            Log.d(TAG, "设置蓝牙可发现: $durationSeconds 秒")
-            // 使用反射调用 setScanMode，需要 BLUETOOTH_ADVERTISE 权限
             val method = bluetoothAdapter?.javaClass?.getMethod("setScanMode", Int::class.java, Int::class.java)
             method?.invoke(bluetoothAdapter, BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE, durationSeconds)
         } catch (e: Exception) {
@@ -583,64 +671,34 @@ class GyroMouseManager(private val context: Context) : SensorEventListener {
         }
     }
 
-    /**
-     * 获取当前连接的 HID 设备
-     */
     fun getConnectedDevice(): BluetoothDevice? {
         return connectedDevice
     }
 
-    /**
-     * 启动持续滚轮滚动
-     * @param direction 滚动方向: -1=向上, 1=向下
-     * @param speed 滚动速度: 1-3
-     */
     private fun startContinuousWheel(direction: Int, speed: Int) {
-        // 停止之前的滚轮
         stopContinuousWheel()
-        
         currentWheelDirection = direction
         currentWheelSpeed = speed
         
-        Log.d(TAG, "启动持续滚轮: direction=$direction, speed=$speed")
-        
         wheelRunnable = object : Runnable {
             override fun run() {
-                // 发送滚轮事件
-                val wheelDelta = currentWheelDirection * currentWheelSpeed
-                Log.d(TAG, "滚轮滚动: delta=$wheelDelta")
-                sendMouseMove(0, 0, wheelDelta)
-                
-                // 计算下次滚动间隔（速度越快，间隔越短）
-                val interval = (baseWheelIntervalMs / currentWheelSpeed).coerceAtLeast(30L)
-                handler.postDelayed(this, interval)
+                sendMouseMove(0, 0, currentWheelDirection * currentWheelSpeed)
+                handler.postDelayed(this, (baseWheelIntervalMs / currentWheelSpeed).coerceAtLeast(30L))
             }
         }
-        
-        // 立即执行第一次
         handler.post(wheelRunnable!!)
     }
     
-    /**
-     * 停止持续滚轮滚动
-     */
     private fun stopContinuousWheel() {
-        if (wheelRunnable != null) {
-            Log.d(TAG, "停止持续滚轮")
-            handler.removeCallbacks(wheelRunnable!!)
-            wheelRunnable = null
-        }
+        wheelRunnable?.let { handler.removeCallbacks(it) }
+        wheelRunnable = null
         currentWheelDirection = 0
         currentWheelSpeed = 1
     }
 
     fun cleanup() {
-        Log.d(TAG, "清理资源")
-        // 保存设置
         saveDeviceSettings(connectedDevice?.address)
-        // 取消超时
         connectTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        // 停止滚轮
         stopContinuousWheel()
         stopSensors()
         disconnect()

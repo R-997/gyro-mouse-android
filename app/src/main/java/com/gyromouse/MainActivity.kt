@@ -20,13 +20,14 @@ import com.gyromouse.databinding.ActivityMainBinding
 
 /**
  * MainActivity - 主界面
+ * 包含抖动优化的UI控制
  */
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1001
-        private const val DOUBLE_BACK_PRESS_INTERVAL = 2000L  // 双击间隔2秒
-        private const val CONNECT_TIMEOUT_SECONDS = 8  // 连接超时8秒
+        private const val DOUBLE_BACK_PRESS_INTERVAL = 2000L
+        private const val CONNECT_TIMEOUT_SECONDS = 8
         private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_CONNECT,
@@ -91,7 +92,6 @@ class MainActivity : AppCompatActivity() {
         setupUI()
         checkPermissions()
         
-        // 自动初始化 HID（如果有权限）
         if (hasBluetoothPermissions()) {
             autoInitHid()
         }
@@ -110,9 +110,8 @@ class MainActivity : AppCompatActivity() {
         gyroManager.initHidDevice { success, error ->
             runOnUiThread {
                 if (success) {
-                    binding.btnInit.text = "已初始化 ✓"
+                    binding.btnInit.text = "已初始化"
                     binding.btnInit.isEnabled = false
-                    // 初始化成功后，尝试连接已配对设备
                     tryConnectPairedDevice()
                 } else {
                     binding.btnInit.isEnabled = true
@@ -126,15 +125,10 @@ class MainActivity : AppCompatActivity() {
     private fun tryConnectPairedDevice() {
         val pairedDevices = gyroManager.getPairedDevices()
         if (pairedDevices.isNotEmpty()) {
-            // 自动连接第一个已配对设备
             val device = pairedDevices[0]
-            android.util.Log.d("MainActivity", "尝试自动连接已配对设备: ${device.name}")
-            
             binding.progressBar.visibility = View.VISIBLE
-            binding.tvStatus.text = "正在连接... (0s/${CONNECT_TIMEOUT_SECONDS}s)"
+            binding.tvStatus.text = "正在连接..."
             binding.btnConnect.isEnabled = false
-            
-            // 开始显示倒计时
             startConnectProgress()
             
             val success = gyroManager.connectToDevice(device)
@@ -143,11 +137,9 @@ class MainActivity : AppCompatActivity() {
                 binding.progressBar.visibility = View.GONE
                 binding.tvStatus.text = "连接失败"
                 binding.btnConnect.isEnabled = true
-                // 显示设备选择器让用户手动选择
                 showDevicePicker()
             }
         } else {
-            // 没有配对设备，显示提示
             showWaitingDialog()
         }
     }
@@ -156,8 +148,7 @@ class MainActivity : AppCompatActivity() {
         connectStartTime = SystemClock.elapsedRealtime()
         connectProgressRunnable = object : Runnable {
             override fun run() {
-                if (isConnected) return  // 已连接，停止
-                
+                if (isConnected) return
                 val elapsed = (SystemClock.elapsedRealtime() - connectStartTime) / 1000
                 if (elapsed <= CONNECT_TIMEOUT_SECONDS) {
                     binding.tvStatus.text = "正在连接... (${elapsed}s/${CONNECT_TIMEOUT_SECONDS}s)"
@@ -200,27 +191,25 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        // 中键/滚轮区域
+        // 中键
         binding.btnMiddle.setOnTouchListener { _, event ->
             handleButtonTouch(event, middle = true)
             true
         }
 
-        // 灵敏度滑块 - 范围改为 0.5 - 10.0，默认 3.5
+        // 灵敏度滑块 - 0.5 - 10.0，默认 3.5
         binding.seekSensitivity.setOnSeekBarChangeListener(object : 
             android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
-                val sensitivity = 0.5f + (progress / 100f) * 9.5f  // 0.5 - 10.0
+                val sensitivity = 0.5f + (progress / 100f) * 9.5f
                 gyroManager.sensitivity = sensitivity
                 binding.tvSensitivity.text = "灵敏度: %.1f".format(sensitivity)
             }
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
-                // 保存当前设置
                 gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
             }
         })
-        // 设置默认灵敏度到 SeekBar（3.5）
         binding.seekSensitivity.progress = ((3.5f - 0.5f) / 9.5f * 100).toInt()
 
         // 平滑度滑块
@@ -233,10 +222,74 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
-                // 保存当前设置
                 gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
             }
         })
+
+        // ===== 抖动优化设置 =====
+        // 死区滑块 - 0.01 - 0.2 rad/s
+        binding.seekDeadZone?.setOnSeekBarChangeListener(object :
+            android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val deadZone = 0.01f + (progress / 100f) * 0.19f
+                gyroManager.deadZone = deadZone
+                binding.tvDeadZone?.text = "死区: %.2f".format(deadZone)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+            }
+        })
+        binding.seekDeadZone?.progress = ((0.05f - 0.01f) / 0.19f * 100).toInt()
+
+        // 速度衰减滑块 - 0.5 - 0.99
+        binding.seekVelocityDecay?.setOnSeekBarChangeListener(object :
+            android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val decay = 0.5f + (progress / 100f) * 0.49f
+                gyroManager.velocityDecay = decay
+                binding.tvVelocityDecay?.text = "速度衰减: %.0f%%".format(decay * 100)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+            }
+        })
+        binding.seekVelocityDecay?.progress = ((0.85f - 0.5f) / 0.49f * 100).toInt()
+
+        // 自适应平滑开关
+        binding.switchAdaptiveSmoothing?.setOnCheckedChangeListener { _, isChecked ->
+                binding.switchSensorFusion?.isChecked = gyroManager.useSensorFusion
+                binding.seekFusionAlpha?.progress = ((gyroManager.fusionAlpha - 0.01f) / 0.19f * 100).toInt()
+                binding.seekFusionAlpha?.isEnabled = gyroManager.useSensorFusion
+            gyroManager.useAdaptiveSmoothing = isChecked
+            gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+        }
+
+        // 传感器融合开关
+        binding.switchSensorFusion?.setOnCheckedChangeListener { _, isChecked ->
+            gyroManager.useSensorFusion = isChecked
+            binding.seekFusionAlpha?.isEnabled = isChecked
+            gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+        }
+
+        // 融合系数滑块 - 1% - 20%
+        binding.seekFusionAlpha?.setOnSeekBarChangeListener(object :
+            android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val alpha = 0.01f + (progress / 100f) * 0.19f  // 0.01 - 0.20
+                gyroManager.fusionAlpha = alpha
+                binding.tvFusionAlpha?.text = "融合系数: %.0f%%".format(alpha * 100)
+            }
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                gyroManager.saveDeviceSettings(gyroManager.getConnectedDevice()?.address)
+            }
+        })
+        binding.switchAdaptiveSmoothing?.isChecked = true
+                binding.switchSensorFusion?.isChecked = gyroManager.useSensorFusion
+                binding.seekFusionAlpha?.progress = ((gyroManager.fusionAlpha - 0.01f) / 0.19f * 100).toInt()
+                binding.seekFusionAlpha?.isEnabled = gyroManager.useSensorFusion
 
         // 滚轮控制开关
         binding.switchWheel.setOnCheckedChangeListener { _, isChecked ->
@@ -250,7 +303,7 @@ class MainActivity : AppCompatActivity() {
         binding.seekWheelSensitivity.setOnSeekBarChangeListener(object :
             android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
-                val sensitivity = 0.5f + (progress / 100f) * 4.5f  // 0.5 - 5.0
+                val sensitivity = 0.5f + (progress / 100f) * 4.5f
                 gyroManager.wheelSensitivity = sensitivity
                 binding.tvWheelSensitivity.text = "滚轮灵敏度: %.1f".format(sensitivity)
             }
@@ -264,7 +317,7 @@ class MainActivity : AppCompatActivity() {
         binding.seekWheelThreshold.setOnSeekBarChangeListener(object :
             android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
-                val threshold = 0.1f + (progress / 100f) * 0.9f  // 0.1 - 1.0 rad/s
+                val threshold = 0.1f + (progress / 100f) * 0.9f
                 gyroManager.wheelThreshold = threshold
                 binding.tvWheelThreshold.text = "滚轮触发阈值: %.2f".format(threshold)
             }
@@ -340,9 +393,8 @@ class MainActivity : AppCompatActivity() {
                 
                 if (success) {
                     Toast.makeText(this, "HID 设备已就绪", Toast.LENGTH_SHORT).show()
-                    binding.btnInit.text = "已初始化 ✓"
+                    binding.btnInit.text = "已初始化"
                     binding.btnInit.isEnabled = false
-                    // 初始化成功后尝试连接已配对设备
                     tryConnectPairedDevice()
                 } else {
                     binding.btnInit.isEnabled = true
@@ -394,10 +446,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectToDevice(device: BluetoothDevice) {
         binding.progressBar.visibility = View.VISIBLE
-        binding.tvStatus.text = "正在连接... (0s/${CONNECT_TIMEOUT_SECONDS}s)"
+        binding.tvStatus.text = "正在连接..."
         binding.btnConnect.isEnabled = false
-        
-        // 开始显示倒计时
         startConnectProgress()
         
         val success = gyroManager.connectToDevice(device)
@@ -416,7 +466,6 @@ class MainActivity : AppCompatActivity() {
         stopConnectProgress()
         
         if (connected) {
-            // 加载设备设置到 UI
             val device = gyroManager.getConnectedDevice()
             device?.let {
                 binding.seekSensitivity.progress = ((gyroManager.sensitivity - 0.5f) / 9.5f * 100).toInt()
@@ -426,6 +475,13 @@ class MainActivity : AppCompatActivity() {
                 binding.seekWheelSensitivity.isEnabled = gyroManager.wheelEnabled
                 binding.seekWheelThreshold.progress = ((gyroManager.wheelThreshold - 0.1f) / 0.9f * 100).toInt()
                 binding.seekWheelThreshold.isEnabled = gyroManager.wheelEnabled
+                // 更新抖动优化设置
+                binding.seekDeadZone?.progress = ((gyroManager.deadZone - 0.01f) / 0.19f * 100).toInt()
+                binding.seekVelocityDecay?.progress = ((gyroManager.velocityDecay - 0.5f) / 0.49f * 100).toInt()
+                binding.switchAdaptiveSmoothing?.isChecked = gyroManager.useAdaptiveSmoothing
+                binding.switchSensorFusion?.isChecked = gyroManager.useSensorFusion
+                binding.seekFusionAlpha?.progress = ((gyroManager.fusionAlpha - 0.01f) / 0.19f * 100).toInt()
+                binding.seekFusionAlpha?.isEnabled = gyroManager.useSensorFusion
             }
             
             binding.btnConnect.text = "断开连接"
@@ -447,7 +503,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnCalibrate.postDelayed({
             isCalibrated = true
             Toast.makeText(this, "校准完成", Toast.LENGTH_SHORT).show()
-            binding.btnCalibrate.text = "已校准 ✓"
+            binding.btnCalibrate.text = "已校准"
         }, 1000)
     }
 
@@ -465,10 +521,14 @@ class MainActivity : AppCompatActivity() {
                    • 左右歪头（Y轴）= 滚轮滚动
                 6. 下方按钮模拟左右中键
                 
+                抖动优化设置：
+                • 死区：忽略微小的移动，减少抖动
+                • 速度衰减：防止速度累积导致的漂移
+                • 自适应平滑：根据移动速度自动调整平滑度
+                
                 提示：
-                - 调整灵敏度获得最佳体验
+                - 调整灵敏度和死区获得最佳体验
                 - 每个设备的设置会被记住
-                - 可在设置中开关/调整滚轮功能
             """.trimIndent())
             .setPositiveButton("知道了", null)
             .show()
@@ -490,15 +550,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    // 双击返回键退出
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             val currentTime = SystemClock.elapsedRealtime()
             if (currentTime - lastBackPressTime < DOUBLE_BACK_PRESS_INTERVAL) {
-                // 双击，退出
                 finish()
             } else {
-                // 单击，提示再按一次
                 Toast.makeText(this, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
                 lastBackPressTime = currentTime
             }
